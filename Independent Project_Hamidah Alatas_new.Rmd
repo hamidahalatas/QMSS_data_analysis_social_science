@@ -1,0 +1,955 @@
+---
+output: 
+  pdf_document:
+    citation_package: natbib
+    keep_tex: true
+    fig_caption: true
+    latex_engine: pdflatex
+    template: "/Users/hamidah/Documents/School/DA4SS/Data_Analysis_Social_Science/svm-latex-ms.tex"
+bibliography: master.bib
+header-includes:
+  -  \usepackage{hyperref}
+biblio-style: apsr
+title: "Leveling up: Upskilling and its benefits to job satisfaction and retainment among Indonesian workers"
+author:
+- name: Hamidah Alatas
+  affiliation:
+abstract: "In this project I tried to look at the relationship between training participation and several job outcomes which are job satisfaction and retention. This project is using the Indonesian Family Life Survey (IFLS) data, a longitudinal socio-economic survey in Indonesia. This project found that even though training participation does not significantly affect the job satisfaction, there are some evidences that together with age, participating in training might significantly predict workers' decision to stay in the same company"
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+geometry: margin=0.5in
+fontfamily: mathptmx
+fontsize: 11pt
+spacing: onehalf
+endnote: no
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library("tidyverse")
+library("haven")
+library("psych")
+library("pacman")
+library("captioner")
+library("ddpcr")
+library("plyr")
+library("kableExtra")
+library("knitr")
+library("viridis")
+library("hrbrthemes")
+library("stargazer")
+library("wesanderson")
+library("AICcmodavg")
+options(scipen=999)
+```
+
+```{r functions, include=FALSE}
+clusterSE <- function(fit, cluster.var, data){ 
+  # note: cluster.var should be entered as character string
+  require(plm); require(lmtest)
+  
+  if (missing(data) & cluster.var %in% colnames(index(fit))){
+    cvar <- index(fit, cluster.var)
+    n <- length(unique(cvar))
+    N <- length(cvar)
+  }
+  else{
+    row.ids <- as.numeric(rownames(model.frame(fit)))
+    # 1. get number of clusters (omitting individuals with missingness)
+    n <- length(unique(data[row.ids, cluster.var]))
+    # 2. get number of observations (again omitting the same individuals)
+    N <- length(row.ids) 
+  }
+  
+  #3. compute degrees of freedom
+  df <- (n/(n - 1)) * (N - 1)/fit$df.residual
+  # compute variance-covariance matrix
+  vcov <- df*vcovHC(fit, type = "HC0", cluster = "group")
+  # retest coefficients  
+  coeftest(fit, vcov = vcov)
+}
+
+stargazer2 <- function(model, odd.ratio = F, ...) {
+  if(!("list" %in% class(model))) model <- list(model)
+    
+  if (odd.ratio) {
+    coefOR2 <- lapply(model, function(x) exp(coef(x)))
+    seOR2 <- lapply(model, function(x) exp(coef(x)) * summary(x)$coef[, 2])
+    p2 <- lapply(model, function(x) summary(x)$coefficients[, 4])
+    stargazer(model, coef = coefOR2, se = seOR2, p = p2, ...)
+    
+  } else {
+    stargazer(model, ...)
+  }
+}
+
+firstD <- function(var, group, df){
+  bad <- (missing(group) & !missing(df))
+  if (bad) stop("if df is specified then group must also be specified")
+  
+  fD <- function(j){ c(NA, diff(j)) }
+  
+  var.is.alone <- missing(group) & missing(df)
+  
+  if (var.is.alone) {
+    return(fD(var))
+  }
+  if (missing(df)){
+    V <- var
+    G <- group
+  }
+  else{
+    V <- df[, deparse(substitute(var))]
+    G <- df[, deparse(substitute(group))]
+  }
+  
+  G <- list(G)
+  D.var <- by(V, G, fD)
+  unlist(D.var)
+}
+```
+
+```{r data, include=FALSE}
+ifls07_1 <- read_dta("01_data/b3a_tk1_2007.dta") %>% 
+  select(pidlink, tk16c1)
+ifls07_2 <- read_dta("01_data/b3a_tk2_2007.dta")%>%
+   select(pidlink, tk24a5, tk22a, tk25a1, 
+          tk25a3e1, tk25a3e2, tk25a3e3, 
+          tk26a5, tk26a6, tk26a7, tk25a8, tk25a9x, tk26a12) 
+ifls07_ar <- read_dta("01_data/bk_ar1_2007.dta") 
+ifls07_ar <- ifls07_ar %>%
+  select(pidlink, ar07, ar09) %>%
+  dplyr::group_by(pidlink) %>%
+  dplyr::summarise(ar07 = mean(ar07, na.rm = TRUE),
+                   ar09 = mean(ar09, na.rm = TRUE))
+
+ifls14_1 <- read_dta("01_data/b3a_tk1_2014.dta") %>% 
+  select(pidlink, tk16c1)
+ifls14_2 <- read_dta("01_data/b3a_tk2_2014.dta") %>%
+   select(pidlink, tk24a5, tk22a, tk25a1, 
+          tk25a3e1, tk25a3e2, tk25a3e3, 
+          tk26a5, tk26a6, tk26a7, tk25a8, tk25a9x, tk26a12) 
+ifls14_ar <- read_dta("01_data/bk_ar1_2014.dta") %>%
+  select(pidlink, ar07, ar09) %>%
+  dplyr::group_by(pidlink) %>%
+  dplyr::summarise(ar07 = mean(ar07, na.rm = TRUE),
+                   ar09 = mean(ar09, na.rm = TRUE))
+
+ifls14_3 <- read_dta("01_data/b3a_tk3_2014.dta")
+ifls14_3 <- ifls14_3 %>% select(pidlink, tk30x, tk28year) %>% 
+  mutate(tk30x = as.numeric(tk30x))
+ifls14_3_spread <- spread(ifls14_3, tk28year, tk30x)
+ifls14_3_spread <- ifls14_3_spread %>% mutate(stay = ifelse(
+  `2013`==3 & `2012`==3 & `2011`==3 & `2010`==3 &
+    `2009`==3 & `2008`==3 &`2007`==3,1,0)) %>% select(pidlink,stay)
+
+ifls07 <- merge(ifls07_1,ifls07_2, by="pidlink")
+ifls07 <- merge(ifls07,ifls07_ar, by="pidlink")
+
+ifls14 <- merge(ifls14_1,ifls14_2, by="pidlink")
+ifls14 <- merge(ifls14,ifls14_ar, by="pidlink")
+
+ifls07 <- ifls07 %>% mutate(year=2007)
+ifls14 <- ifls14 %>% mutate(year=2014)
+ifls14 <- merge(ifls14,ifls14_3_spread, by="pidlink")
+ifls07 <- ifls07 %>% mutate(stay=NA)
+ifls_all <- rbind(ifls07,ifls14)
+
+#recode var
+vars <- c("tk26a5", "tk26a6", "tk26a7", "tk26a12")
+ifls_all <- ifls_all %>% 
+  mutate_at(vars,funs(ifelse(.==9,NA,.))) %>%
+  mutate_at(vars,funs(5-.))
+
+ifls_all$physical <- rowMeans(ifls_all[,9:11])
+ifls_all <- ifls_all %>% mutate(medical_benefit = 
+                                  ifelse(tk25a3e1==1 |
+                                           tk25a3e2==1 |
+                                           tk25a3e3==1,1,0)) %>%
+  mutate(tk25a1 = ifelse(tk25a1==0,NA,
+                         ifelse(tk25a1==999999997,NA,tk25a1)),
+         log_income = log(tk25a1),
+         contract = ifelse(tk24a5==3,0,
+                           ifelse(tk24a5==2,1,
+                                  ifelse(tk24a5==1,2,NA))),
+         train_duration = ifelse(tk25a8==3,0,
+                          ifelse(tk25a9x==3,1,
+                                 ifelse(tk25a9x==2,2,
+                                        ifelse(tk25a9x==1,3,NA)))),
+         tk25a8 = ifelse(tk25a8==3,0,
+                         ifelse(tk25a8==9,NA,tk25a8)),
+         tk16c1 = 5-tk16c1,
+         ar07 = ifelse(ar07==1,0,1),
+         ar09 = ifelse(ar09==998,NA,
+                       ifelse(ar09<15,NA,
+                              ifelse(ar09>89,NA,ar09))),
+         tk22a = ifelse(tk22a>140,NA,tk22a)) %>%
+    select(-tk25a3e1,-tk25a3e2,-tk25a3e3,-tk26a5,
+           -tk26a6,-tk26a7,-tk24a5,-tk25a9x, -tk24a5) %>%
+  mutate(tk16c1 = ifelse(tk16c1<0,NA, tk16c1))
+  
+ifls_all <- plyr::rename(ifls_all, c("tk16c1" = "job_satif",
+                               "tk25a8" = "training",
+                               "tk22a" = "hour",
+                               "tk26a12" = "stress",
+                               "ar09" = "age",
+                               "ar07" = "female" ,
+                               "tk25a1" = "income"))
+
+ifls_filter <- ifls_all %>% filter(!is.na(training))
+
+ifls_filter$train_duration <- ordered(ifls_filter$train_duration, levels = c(0,1,2,3),
+                                           labels = c("No Training",
+                                                      "More than a year ago",
+                                                      "Less than a year ago for less than 1 week",
+                                                      "Less than a year ago for more than 1 week"))
+
+ifls_filter$training <- ordered(ifls_filter$training, levels = c(0,1),
+                                           labels = c("No","Yes"))
+
+ifls_filter$job_satif <- ordered(ifls_filter$job_satif, levels = c(1,2,3,4),
+                                           labels = c("Very Unsatisfied",
+                                                      "Unsatisfied",
+                                                      "Satisfied",
+                                                      "Very Satisfied"))
+
+ifls_filter$contract <- ordered(ifls_filter$contract, levels = c(0,1,2),
+                                           labels = c("No Contract",
+                                                      "Fixed-Term Contract",
+                                                      "Permanent Contract"))
+
+ifls_filter$b.job_satif <- ifelse(ifls_filter$job_satif == "Satisfied" | 
+                                    ifls_filter$job_satif == "Very Satisfied", 1, 0)
+```
+# Introduction
+\vspace{-3truemm}
+The ever-expanding technological advancement is shifting the way we work. It changes not only the skills that industry demands but also the human capital investments of students and workers. The question of how to prepare the labor force with the skills they need has become more pressing now than ever. Moreover, the COVID-19 pandemic will most be expected to exacerbate these needs. Together with the fourth industrial revolution, the pandemic will accelerate a structural change of skills' needs that will harm the vulnerable workers if not properly addressed. Low-skill and low-educated workers will likely have more need to catch up with the upcoming changes by upskilling.
+
+\vspace{2mm}
+
+Upskilling, defined as an effort to help someone learning new professional skills to participate in the economy, is the key to helping people integrate into better and improved jobs [@WEF]. Moreover, job training program is proven to have a positive relationship with employee commitment and satisfaction [@ocen]. However, the current uptake of any upskilling program in Indonesia is still low, as around 91 percent of unemployed people had not taken any skill training program in 2019 [@CMEA]. 
+
+\vspace{2mm}
+
+This project aims to identify the relationship between employer-provided training participation and job outcome. There are two job outcomes this project are interested in, job satisfaction and retention. The first hypothesis is training participation, even after adjusting for other characteristics, has a positive relationship with job satisfaction. Participation in a job training will increase employee's skill thus they can do their job in more efficient way and make them more satisfied with their overall working environment. The second hypothesis is training participation, net other variables, has a negative relationship with job retention. This hypothesis is derived from an intuition that skill's improvement will increase employee's competitiveness and make it easier for them to find a new job. This project will explore the association (not necessarily causation) between job outcome and participation in skill training. Therefore, this project could not conclude whether upskilling participation is necessary and or sufficient for increase in job satisfaction and job retention.
+
+# Data and Variables
+\vspace{-3truemm}
+This project uses the Indonesian Family Life Survey (IFLS) data, a longitudinal survey in Indonesia. This survey covers a wealth of variables related to social indicators collected at the individual and household levels, including employment condition and demographic. Up until now there are 5 waves of IFLS; 1993, 1997, 2000, 2007, and 2014. The sample of IFLS is representative of about 83 percent of the Indonesian population with sample of 30,000 individuals living in 13 of the 27 at-the-time provinces in the country. The re-contact rate of IFLS is pretty high with 92 percent of households in IFLS 1 (1993) were re-contacted in IFLS 5 (2014). However, for this project, I will only be using 2007 and 2014 waves since they are the only waves with question about training. Moreover, I am filtering the data to only include people who are working with employer in the last 7 days.
+
+## Dependent Variables
+\vspace{-2truemm}
+The dependent variable of interest in this project is job outcome. Specifically, there are two variables that is hypothesized to have an association with job training which are job satisfaction and retention. Both 2007 and 2014 IFLS data have these variables. Below are the list of the variables:
+
+1. **job_satif**: General job satisfaction is derived from IFLS question "How satisfied are you with your current job?" under `tk16c1` variable. For this variable, I recode the original variable so it will be in increasing manner with 1 as "Very Unsatisfied" to 4 is "Very Satisfied" 
+
+2. **stay**: I will also look at whether the employee stay in the same company. IFLS asked the history of employment of a person in-between the waves. In 2014 data, the questionnaire asked the name of company that the person worked at in 2007 and 2014 (`tk30`), I will match these two information to get 1 if the person stay in the same company and 0 if the person change employment.
+
+
+## Independent Variables
+\vspace{-2truemm}
+There are three questions about employer-provided training in IFLS data: participation, duration, and type of training. These questions are only asked for people who are working with an employer (i.e. government and private worker). For this project, I am interested to look at participation and duration of training as the predictor of job satisfaction and retainment. Moreover, several variables that are likely to predict job satisfaction such as working hour, income, sector of employment, benefit, will also be regressed to the predictors. Below is the list of the main independent variables and control variables that I am interested to look at:
+
+1. **training**: This is the key independent variables of this project, whether the respondent has ever participated in an employer-provided training in his/her current job. Both of 2007 and 2014 IFLS asked this question under `tk25a8` variable "Have you ever received any training from your employer?". This variable will take value of 1 if this respondent ever received a training from this employer and 0 if not. The hypothesis is participating in training, will increase someone's job satisfaction and decrease the probability of them to stay in the same job.
+
+2. **train_duration**: This is the second variable I am interested to look at, how long the training takes place. This question is under variable `tk25a9` in IFLS. I will recode this variable to have value 0 if the respondent never participated in the training, 1 if the training is more than 12 months ago, 2 if the training is less than 12 months ago but for less than a week, and 3 if the training is less than 12 months ago and for one week or more. The hypothesis is the longer and recent a training is the higher someone's job satisfaction is and the less likely they will stay in the same job.
+
+3. **hour**: In IFLS actually there are two questions about hour per week, one is asking about the total number of hours respondent worked during the past week (`tk21a`) and the other one is asking about in normal condition, what is the approximate total number of hours she/he work per week (`tk22a`). However, for this analysis I will use the working hour under normal condition. A study in Australia, found that long hours of work are associated with lower job satisfaction and more job search activity [@brown]. Therefore, I expect working hour will have negative relationship with job satisfaction and probability of staying at the same job.
+
+4. **log_income**: IFLS asked about the salary/wage during the last month (including the value of all benefits) in Indonesia Rupiah (IDR) under question `tk25a1`. I will log this variable because income variable has a very wide range. By transforming the variable to `ln` variable, we will have narrower range, and having the narrower range would make the estimates of the linear model less sensitive to outliers. I assume that income will have positive relationship with job satisfaction and probability staying in the same job. 
+
+5. **contract**: Contract is an important feature to have in a job. Without contract, employee will have less bargaining power thus it might be associated with lower satisfaction in job. IFLS asked the contract type that an employee has in question `tk24a5`. I will use this variable and recode it so it has value 0 for no contract, 1 for contract with no fixed time, and 2 for contract with fixed time. 
+
+6. **medical_benefit**: This variable has a value of 1 if a respondent receive any medical benefit from the employers (`tk25a3e1`,`tk25a3e2`, `tk25a3e3`) and 0 if not at all. A study found that benefits were significantly, and positively, associated to overall job satisfaction [@ellickson]. Therefore, I expect that this variable also has positive relationship with job satisfaction and retention. 
+
+7. **physical**: In this variable, I combine three questions asking about whether someones' job require many physical activities. The three variables are whether the job requires lots of physical effort" (`tk26a5`), lifting heavy loads (`tk26a6`), and stooping, kneeling, crouching (`tk26a7`). I recode these variables to have increasing value; 1 "None/Almost none of the time", 2 "Some of the time", 3 "Most of the time", 4 "All/Almost all the time". I decided to combine these variables to **physical** without standardization (due to similar scale), which represents how much physical activities are needed in this job. The raw Cronbach's alpha coefficient is 0.75, which indicates that the new variable has a good reliability to measures the three variables at once. A study found that physical demands at work negatively but weakly correlated with job satisfaction [@andersen]. I would like to test whether this relationship also applies in Indonesia case. 
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+vars <- c("tk26a5", "tk26a6", "tk26a7")
+sub <- ifls07_2[, vars]
+quiet(sum <- round(summary(alpha(sub)),2))
+kbl(sum[,1:5], caption = "Cronbach Alpha for physical variable", 
+    row.names = FALSE, 
+    format.args = list(decimal.mark = ".", big.mark = ","),
+    booktabs = T) %>%
+  kable_styling(latex_options = c("striped", "hold_position"))
+```
+
+8. **stress**: I also add variable in which employees were asked whether their work burden them with stress. This question is in both IFLS 2007 and 2014 under question number `tk26a12`. I recode this variables to have increasing value from 1"None/Almost none of the time" to 4"All/Almost all the time". The hypothesis is the more stressing the work environment is, the more likely employee will feel less satisfied with their job. 
+
+9. **age** and **female**: For demographic variable, I add age and gender as control variables. A study found that gender and age are associated with both job satisfaction and pride in work [@magee]. In age, I dropped respondents with age less than 15 because  employment module was supposed to be asked for respondents in working age (15+).
+
+# Descriptive Statistics
+\vspace{-3truemm}
+In 2007, there are 44,190 respondents who were working for employer that will be the sample for our analysis. The average age of the respondent is 33 years and on average they work for 45 hours a week. This working hour average is higher than the global average weekly working time which is 43 hours [@ILO]. Respondents who are working with employers in Indonesia, on average, have monthly income of IDR 1,042,381 or equal to USD 114 in 2007. Since income variable shows high variability in this data, I added the `log_income` variable. 
+\vspace{2mm}
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+ifls_filter_07 <- 
+  ifls_filter %>% 
+  filter(year==2007) %>%
+  select(age, hour, physical, stress, log_income, income) %>%
+  gather("variable", "value")
+
+table2 <- ddply(ifls_filter_07, "variable", summarise, 
+      Mean = mean(as.numeric(value), na.rm = T), 
+      Median = median(as.numeric(value), na.rm = T), 
+      Std.Dev = sd(as.numeric(value), na.rm = T),
+      Min = min(value, na.rm = T),
+      Max = max(value, na.rm = T))
+
+table2 <- table2 %>% mutate_at(c("Mean", "Median", "Std.Dev", "Min", "Max"),
+                               funs(ifelse(variable=="income", round(as.numeric(.),0),
+                                           round(as.numeric(.),2))))
+
+kbl(table2, caption = "Summary statistics for control variables, 2007", 
+    row.names = FALSE, 
+    format.args = list(decimal.mark = ".", big.mark = ","),
+    booktabs = T,
+    digits = 20) %>%
+  kable_styling(latex_options = c("striped", "hold_position"))
+```
+
+In 2014, the number of respondents who were working with employer is 90,731 with average age increased a bit to 34 years old compared to 2007. Although this survey follow the same people for both wave, it is possible that the increase of average age of 1 years instead of 7 years is because there are new people that in 2007 were not working due to young age but in 2014 started to work. The working hour, however, decreased to 43 hours per week which could indicate improvement in working condition in general. Average of monthly income is also increased to IDR 2,016,246, but this is probably due to inflation since both income is nominal and we do not have information on real income. The variability of income is also still very high with standard deviation of IDR 2,358,833. As above, I also transform the income variable to its logarithmic value.  
+\vspace{2mm}
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+ifls_filter_14 <- 
+  ifls_filter %>% 
+  filter(year==2014) %>%
+  select(age, hour, physical, stress, log_income, income) %>%
+  gather("variable", "value")
+
+table3 <- ddply(ifls_filter_14, "variable", summarise, 
+      Mean = mean(as.numeric(value), na.rm = T), 
+      Median = median(as.numeric(value), na.rm = T), 
+      Std.Dev = sd(as.numeric(value), na.rm = T),
+      Min = min(value, na.rm = T),
+      Max = max(value, na.rm = T))
+
+table3 <- table3 %>% mutate_at(c("Mean", "Median", "Std.Dev", "Min", "Max"),
+                               funs(ifelse(variable=="income", round(as.numeric(.),0),
+                                           round(as.numeric(.),2))))
+
+kbl(table3, caption = "Summary statistics for control variables, 2014", 
+    row.names = FALSE, 
+    format.args = list(decimal.mark = ".", big.mark = ","),
+    booktabs = T) %>%
+  kable_styling(latex_options = c("striped", "hold_position"))
+```
+
+For the main independent variables, I observe the increase of percentage of respondents who participated in employer-provided training program in 2014 compared to 2007 (28 percent vs 34 percent). Not only the proportion of workers who participated in training increase, when looking at duration and recency of training, we see an improvement of respondents who had more recent training and longer duration of training in 2014 compared to 2007. In 2014, 15 percent of workers spent more than 1 week in a training that happened less than a year ago while in 2007 only 11 percent belonged in this group of respondents.
+\vspace{2mm}
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+ifls_filter_tr <- ifls_filter %>% 
+  select(pidlink, year, training) %>%
+  mutate(train = ifelse(training=="Yes",1,0))
+
+table4 <- ddply(ifls_filter_tr, "year", summarise, 
+      Count = sum(as.numeric(train), na.rm = T), 
+      Percent = round(mean(as.numeric(train), na.rm = T)*100,2)) %>%
+  mutate(Year = as.character(year)) %>% 
+  select(-year) %>% 
+  select(Year, Count, Percent)
+
+kbl(table4, caption = "Training Participation, 2007 and 2014", 
+    row.names = FALSE, 
+    format.args = list(decimal.mark = ".", big.mark = ","),
+    booktabs = T) %>%
+  kable_styling(latex_options = c("striped", "hold_position"))
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+table5a <- ifls_filter %>% 
+  filter(year==2007) %>%
+  select(pidlink, train_duration) %>%
+  mutate(`Training Duration & Recency` = train_duration,
+         n = 1, total = sum(n)) %>%
+  dplyr::group_by(`Training Duration & Recency`) %>%
+  dplyr::summarise(count = sum(n),
+                   percent = round(sum(n)/total*100,2)) %>%
+  ungroup() %>%
+  dplyr::group_by(`Training Duration & Recency`) %>%
+  dplyr::summarise(Count = mean(count),
+                   Percent = mean(percent))  
+
+
+table5b <- ifls_filter %>% 
+  filter(year==2014) %>%
+  select(pidlink, train_duration) %>%
+  mutate(`Training Duration & Recency` = train_duration,
+         n = 1, total = sum(n)) %>%
+  dplyr::group_by(`Training Duration & Recency`) %>%
+  dplyr::summarise(count = sum(n),
+                   percent = round(sum(n)/total*100,2)) %>%
+  ungroup() %>%
+  dplyr::group_by(`Training Duration & Recency`) %>%
+  dplyr::summarise(Count = mean(count),
+                   Percent = mean(percent))  
+
+table5 <- rbind(table5a, table5b)
+kbl(table5, caption = "Training duration and recency, 2007 and 2014", 
+    row.names = FALSE, 
+    format.args = list(decimal.mark = ".", big.mark = ","),
+    booktabs = T) %>%
+  kable_styling(latex_options = c("striped", "hold_position"))%>%
+  pack_rows("2007", 1, 4) %>%
+  pack_rows("2014", 5, 8)
+```
+
+In this analysis, I looked at two variables that indicate job outcome: satisfaction and retention. Overall, in 2014 employee had a slightly higher job satisfactory level as 83.7 percent of workers were either satisfied or very satisfied with their job compared to 80.7 percent of workers in 2007 who shared the same satisfactory level. Below we could also see that majority of Indonesian employee were satisfied with their job, with only a very little proportion of them were very unsatisfied with their job. 
+\vspace{2mm}
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+table6a <- ifls_filter %>% 
+  filter(year==2007) %>%
+  select(pidlink, job_satif) %>%
+  mutate(`Job Satisfaction` = job_satif,
+         n = 1, total = sum(n)) %>%
+  dplyr::group_by(`Job Satisfaction`) %>%
+  dplyr::summarise(count = sum(n),
+                   percent = round(sum(n)/total*100,2)) %>%
+  ungroup() %>%
+  dplyr::group_by(`Job Satisfaction`) %>%
+  dplyr::summarise(Count = mean(count),
+                   Percent = mean(percent))  
+
+table6b <- ifls_filter %>% 
+  filter(year==2014) %>%
+  select(pidlink, job_satif) %>%
+  mutate(`Job Satisfaction` = job_satif,
+         n = 1, total = sum(n)) %>%
+  dplyr::group_by(`Job Satisfaction`) %>%
+  dplyr::summarise(count = sum(n),
+                   percent = round(sum(n)/total*100,2)) %>%
+  ungroup() %>%
+  dplyr::group_by(`Job Satisfaction`) %>%
+  dplyr::summarise(Count = mean(count),
+                   Percent = mean(percent))  
+
+table6 <- rbind(table6a,table6b)
+kbl(table6, caption = "Job Satisfaction, 2007 and 2014", 
+    row.names = FALSE, 
+    format.args = list(decimal.mark = ".", big.mark = ","),
+    booktabs = T) %>%
+  kable_styling(latex_options = c("striped", "hold_position"))%>%
+  pack_rows("2007", 1, 4) %>%
+  pack_rows("2014", 5, 8)
+```
+
+Moreover, among respondents who were working in 2014, 18 percent of them worked for the same employer as 7 years ago. From the table below we could also see that around 14 percent of working respondents in 2014 did not have a job in 2007. 
+\vspace{2mm}
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+table7 <- ifls_filter %>% 
+  filter(year==2014) %>%
+  select(pidlink, stay) %>%
+  mutate(Movement = ifelse(stay==1,"Stay","Move")) %>%
+  mutate(Movement = ifelse(is.na(Movement),"Prev Not Working",Movement),
+         n = 1,
+         total = sum(n)) %>%
+  dplyr::group_by(Movement) %>%
+  dplyr::summarise(count = sum(n),
+                   percent = round(sum(n)/total*100,2)) %>%
+  ungroup() %>%
+  dplyr::group_by(Movement) %>%
+  dplyr::summarise(Count = mean(count),
+                   Percent = mean(percent))  
+
+kbl(table7, caption = "Job Movement during 2007-2014 period", 
+    row.names = FALSE, 
+    format.args = list(decimal.mark = ".", big.mark = ","),
+    booktabs = T) %>%
+  kable_styling(latex_options = c("striped", "hold_position"))
+```
+
+When looking at the relationship between training participation and job satisfaction, we can see that employee who received training are more likely to feel very satisfied on their job compared to workers without training by 6 percentage points (Figure 1). The percentage of employee who are very unsatisfied with the job however does not differ by training participation. However, other variables might mediate this relationship therefore, in the next chapter, we will be looking at the multivariate linear regression. 
+\vspace{2mm}
+
+Same pattern also found when looking at the relationship between job movement and training participation. Among workers who held job in both waves, those who received training in 2007 were more likely to stay in their previous job in 2007. This is actually contradicts the hypothesis that workers with training experience in previous job are more likely to move. There are two reasons why this might happen. The first one is because this positive relationship is mediated by other variables, or the employers successfully held the equilibrium where quits are low and training high [@acemoglu]. The former reason will be checked using multiple linear regression in the next chapter.
+\vspace{2mm}
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, fig.align = "center", fig.cap = "Job satisfaction by training participation", fig.height = 3, fig.width = 7}
+ifls_filter %>% 
+  mutate(value = 1) %>%
+  dplyr::group_by(training, job_satif, year) %>% 
+  dplyr::summarise(value = sum(value)) %>%
+  ungroup() %>%
+  dplyr::group_by(training, year) %>%
+  dplyr::transmute(job_satif, percentage = round(value/sum(value)*100),2) %>%
+  ggplot(aes(fill=training, y=percentage, x=job_satif)) + 
+    geom_bar(position="dodge", stat="identity") +
+    xlab("Job Satisfaction") +
+  facet_wrap(~year) + 
+  geom_text(aes(x=job_satif, y=percentage+2,
+                label=paste0(round(percentage, 0), sep = "%")), 
+            position = position_dodge(width = 1), hjust=0.5, size = 3) +
+  scale_fill_manual(values=(wes_palette("Darjeeling1",2))) +
+  theme_light() +
+  theme(axis.text.x = element_text(angle = 30, hjust = 1))
+
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, fig.align = "center", fig.cap = "Job Movement by training participation", fig.height = 2.5, fig.width = 3.5, fig.pos='h'}
+ifls_stay <- ifls_filter %>% filter(year==2014) %>% select(pidlink,stay)
+ifls_stay_data <- ifls_filter %>% 
+  filter(year==2007) %>% 
+  select (-stay) %>%
+  merge(ifls_stay, by="pidlink") %>%
+  mutate(stay = ordered(stay, 
+         levels = c(0,1),
+         labels = c("Move","Stay")))
+
+ifls_stay_data %>% 
+  mutate(value = 1) %>%
+  filter(!is.na(stay)) %>%
+  dplyr::group_by(training, stay) %>% 
+  dplyr::summarise(value = sum(value)) %>%
+  ungroup() %>%
+  dplyr::group_by(training) %>%
+  dplyr::transmute(stay, 
+                   percentage = round(value/sum(value)*100,2),
+                   year = 2014) %>%
+  ggplot(aes(fill=training, y=percentage, x=stay)) + 
+    geom_bar(position="dodge", stat="identity") +
+    xlab("") +
+  geom_text(aes(x=stay, y=percentage+2,
+                label=paste0(round(percentage, 0), sep = "%")), 
+            position = position_dodge(width = 1), hjust=0.5, size = 3) +
+  facet_wrap(~year) + 
+  scale_fill_manual(values=(wes_palette("Darjeeling1",2))) +
+  theme_light()
+```
+# Initial Model
+\vspace{-3truemm}
+## Training Participation and Job Satisfaction
+\vspace{-2truemm}
+In the first analysis, I ran naive (pooled) linear regression with and without demographic variables as control variables. 
+
+Model 1 (without demographic variables): 
+$$
+\begin{aligned}
+JobSatif = \alpha + \beta_1 Training + \beta_2 Hour + \beta_3 Log Income \\ 
++ \beta_{41} Contract.1 + \beta_{42} Contract.2 + \beta_5 Medical Benefit \\
++ \beta_6 Physical + \beta_7 Stress + \epsilon
+\end{aligned}
+$$
+
+Model 2 (with demographic variables): 
+$$
+\begin{aligned}
+JobSatif = \alpha + \beta_1 Training + \beta_2 Hour + \beta_3 Log Income \\ 
++ \beta_{41} Contract.1 + \beta_{42} Contract.2 + \beta_5 Medical Benefit \\
++ \beta_6 Physical+ \beta_7 Stress + \beta_8 Age + \beta_9 Gender + \epsilon
+\end{aligned}
+$$
+
+In regression table below, clustered standard error by individual identification variable is used. Clustered standard error is a more suitable estimation for these models considering in panel data, error in the original model are more likely to be not independent.  In this analysis, we can see that training has positive significant relationship to job satisfaction even after adjusting for working hour, log of income, contract ownership, medical benefit, physical activity level, and stress level. However, the effect is very small since on average, employee that received training has 0.07 higher job satisfaction score compared to employee without training net other variables. This relationship is significant with p-value <0.01 indicating that the probability to get t-value as large as 30 under the condition when there is no relationship between these two variables is less than 1 percent. 
+
+\vspace{2mm}
+
+The positive and significant relationship holds true even after adding demographic variables, gender and age. Gender and age albeit positively associated with job satisfaction, did not change the coefficient of training by much. Net of other variables (including demographic variables), workers with training, on average, would still have higher job satisfaction score by 0.07 compared to non-trained workers. However, this model has a very low R-squared of 6 percent which indicates this set of independent variables can only explain 6 percent of variance in job satisfaction. 
+
+\vspace{2mm}
+
+When training variable were broken down based on duration and recency, I found that net other variables, no matter the recency and duration group, workers with training on average has significantly higher job satisfaction compared to workers without training. For instance, workers who had a training more than a year ago, on average has higher job satisfaction by 0.07 point compared to workers without training, net other variables. However, the more interesting finding here is the association between job satisfaction and whether workers had no training or had a training for more than a week is actually not as strong as the relationship between job satisfaction and whether workers with no training or had a training for less than one week. This indicates that duration of training does not affect the job satisfaction. 
+
+Model 3 (without demographic variables): 
+$$
+\begin{aligned}
+JobSatif = \alpha + \beta_{11} Training Duration.1 + \beta_{12} Training Duration.2 \\
++ \beta_{13} Training Duration.3+ \beta_2 Hour + \beta_3 Log Income \\ 
++ \beta_{41} Contract.1 + \beta_{42} Contract.2 + \beta_5 Medical Benefit \\
++ \beta_6 Physical + \beta_7 Stress + \epsilon
+\end{aligned}
+$$
+
+Model 4 (with demographic variables): 
+$$
+\begin{aligned}
+JobSatif = \alpha + \beta_{11} Training Duration.1 + \beta_{12} Training Duration.2 \\
++ \beta_{13} Training Duration.3+ \beta_2 Hour + \beta_3 Log Income \\ 
++ \beta_{41} Contract.1 + \beta_{42} Contract.2 + \beta_5 Medical Benefit \\
++ \beta_6 Physical + \beta_7 Stress + \beta_8 Age + \beta_9 Gender + \epsilon
+\end{aligned}
+$$
+```{r, echo=FALSE, message=FALSE, warning=FALSE, results='asis'}
+lm1 <- lm(as.numeric(job_satif) ~ training + hour + 
+           log_income + contract + medical_benefit + physical + 
+           stress, ifls_filter)
+lm2 <- lm(as.numeric(job_satif) ~ training + hour + 
+           log_income + contract + medical_benefit + physical + 
+           stress + age + female, ifls_filter)
+
+lm1.c <- clusterSE(fit = lm1, cluster.var = "pidlink", data=ifls_filter)
+lm2.c <- clusterSE(fit = lm2, cluster.var = "pidlink", data=ifls_filter)
+
+stargazer(lm1.c, lm2.c, type = "latex",
+          title = "Linear Regression Models Predicting Job Satisfaction",
+  column.labels = c("Model 1", "Model 2"),
+  colnames = FALSE,
+  table.placement = "H",
+  header=FALSE,
+  model.numbers = FALSE,
+  dep.var.labels.include = FALSE,
+  dep.var.caption = "Job Satisfaction (1-4 scale)",
+  covariate.labels = c("(Intercept)", "Training = Yes", "Hour", "Log Income", 
+                       "Contract = Fixed-Term", "Contract = Permanent", 
+                       "Medical Benefit = Yes",
+                       "Physical Level", "Stress Level", 
+                       "Age", "Gender: Female"),
+  notes = "Standard error is clustered by individual ID",
+  add.lines = list(c("R$^2$", round(summary(lm1)$r.squared, 2),
+                     round(summary(lm2)$r.squared, 2))),
+  notes.align = "l",
+  column.sep.width = "1pt",
+  font.size= "footnotesize")
+```
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, results='asis'}
+lm3 <- lm(as.numeric(job_satif) ~ train_duration + hour + 
+           log_income + contract + medical_benefit + physical + 
+           stress , ifls_filter)
+lm4 <- lm(as.numeric(job_satif) ~ train_duration + hour + 
+           log_income + contract + medical_benefit + physical + 
+           stress + age + female, ifls_filter)
+
+lm3.c <- clusterSE(fit = lm3, cluster.var = "pidlink", data=ifls_filter)
+lm4.c <- clusterSE(fit = lm4, cluster.var = "pidlink", data=ifls_filter)
+
+stargazer(lm3.c, lm4.c, type = "latex",
+          title = "Linear Regression Models Predicting Job Satisfaction",
+  column.labels = c("Model 3", "Model 4"),
+  colnames = FALSE,
+  table.placement = "H",
+  header=FALSE,
+  model.numbers = FALSE,
+  dep.var.labels.include = FALSE,
+  dep.var.caption = "Job Satisfaction (1-4 scale)",
+  keep.stat = c("rsq", "f"),
+  covariate.labels = c("(Intercept)", "Training: More than a year ago",
+                       "Training: Less than a year ago for < 1 week", 
+                       "Training: Less than a year ago for > 1 week", 
+                       "Hour", "Log Income", 
+                       "Contract = Fixed-Term", "Contract = Permanent", 
+                       "Medical Benefit = Yes",
+                       "Physical Level", "Stress Level", 
+                       "Age", "Gender: Female"),
+  notes = "Standard error is clustered by individual ID",
+  add.lines = list(c("R$^2$", round(summary(lm3)$r.squared, 2),
+                     round(summary(lm4)$r.squared, 2))),
+  notes.align = "l",
+  column.sep.width = "1pt",
+  font.size= "footnotesize")
+```
+
+## Training Participation and Job Retention
+
+For job retention model, I use the working conditions in 2007 as independent variables, and whether employee stay in 2014 or not as the dependent variables. Logistic regression is used since the dependent variable in this model (whether the employee stay or not) is binary variable. In the table below, we can see if we only include training participation variable (regardless of the duration and recency), there is no significant relationship between participation in the upskilling program to job retention. Net of other variables, on average, the odds of staying in the same job seven years later for workers who participated in training in 2007 over the odds of staying in the same job for workers who did not participate in training is 0.9. This indicates the negative but not significant relationship between training participation and job retention which align with the first hypothesis. 
+
+\vspace{2mm}
+
+However, when we dissect the training participation based on recency and duration, we can see in the model 6 that workers who participated in a more than a week training in 2007 were significantly less likely to work in the same employer in 2014. Net of other variables, workers who did not participate in the training, on average, had a 1.41 (=1/0.707) higher odds of staying in the same company compared to workers who participated in a training for more than a week. This finding indicates that after controlling other variables, the more intense the training is, the more likely a worker to move to another job which probably due to improved skill. 
+
+\vspace{2mm}
+
+Model 5 (Training): 
+$$
+\begin{aligned}
+log(\frac{p_{stay}}{1-p_{stay}}) = \alpha + \beta_{1} Training + \beta_2 Hour + \beta_3 Log Income \\ 
++ \beta_{41} Contract.1 + \beta_{42} Contract.2 + \beta_5 Medical Benefit \\
++ \beta_6 Physical + \beta_7 Stress + \beta_8 Age + \beta_9 Gender + \epsilon
+\end{aligned}
+$$
+
+Model 6 (Training Duration): 
+$$
+\begin{aligned}
+log(\frac{p_{stay}}{1-p_{stay}}) = \alpha + \beta_{11} Training Duration.1 + \beta_{12} Training Duration.2\\\
++ \beta_{13} Training Duration.3+ \beta_2 Hour + \beta_3 Log Income \\ 
++ \beta_{41} Contract.1 + \beta_{42} Contract.2 + \beta_5 Medical Benefit \\
++ \beta_6 Physical + \beta_7 Stress + \beta_8 Age + \beta_9 Gender + \epsilon
+\end{aligned}
+$$
+```{r, echo=FALSE, message=FALSE, warning=FALSE, results='asis'}
+ifls_stay_data$stay_d <- ifelse(ifls_stay_data$stay=="Stay",1,
+                                ifelse(ifls_stay_data$stay=="Move",0,NA))
+
+lm5 <- glm(stay_d ~ training + hour + 
+           log_income + contract + medical_benefit + physical + 
+           stress + age + female, ifls_stay_data, family = binomial(link = "logit"))
+lm6 <- glm(stay_d ~ train_duration + hour + 
+           log_income + contract + medical_benefit + physical + 
+           stress + age + female, ifls_stay_data, family = binomial(link = "logit"))
+
+models <- list(lm5, lm6)
+
+stargazer2(models, type = "latex",
+          title = "Logistic Regression Models Predicting Employee Retention",
+  column.labels = c("Model 5", "Model 6"),
+  odd.ratio = T,
+  colnames = FALSE,
+  table.placement = "H",
+  header=FALSE,
+  model.numbers = FALSE,
+  dep.var.labels.include = FALSE,
+  dep.var.caption = "Odds Ratio for Stay in the Job",
+  keep.stat = c("rsq", "f"),
+  covariate.labels = c("Training = Yes", 
+                       "Training: More than a year ago",
+                       "Training: Less than a year ago for < 1 week",
+                       "Training: Less than a year ago for > 1 week",
+                       "Hour", "Log Income",
+                       "Contract = Fixed-Term", "Contract = Permanent",
+                       "Medical Benefit = Yes",
+                       "Physical Level", "Stress Level",
+                       "Age", "Gender: Female"),
+  notes.align = "l",
+  add.lines = list(c("Corrected AIC", round(AICc(lm5), 1), round(AICc(lm6), 1))),
+  column.sep.width = "1pt",
+  font.size= "footnotesize")
+```
+## Remarks on Initial Models
+\vspace{-2truemm}
+In model 1-4, we used linear regression model to look at the relationship between training participation and job satisfaction. In these models, we assume equal distance between job satisfaction categories (i.e. the distance from very unsatisfied to unsatisfied is the same as the distance from satisfied to very satisfied). Therefore, we assume the relationship between job satisfaction and training participation is linear when it could be something else. Moreover, even though we found statistically significant results after controlling other variables and clustering standard error in these models, workers who participated in training may be fundamentally different from workers who did not participate in training in things that we could not observe (individual heterogeneity). 
+
+\vspace{2mm}
+
+In models 5 and 6, by using logistic regression we found that while general participation in training does not have a significant relationship with log-odds of staying in the same job, workers with more intense training are more likely to move to another job compared to workers without training. However, looking at the AIC, which is a measure that can be used for model selection, model 6 that includes the training intensity only improve model 5 by a little. Therefore, in the next iteration I will be looking at interaction to improve the models. 
+
+# Model Improvement
+\vspace{-3truemm}
+## First Difference Model
+\vspace{-2truemm}
+As mentioned above, by using linear regression, we fail to look after the individual heterogeneity in our models. However, by taking the difference between two time period in panel data we can look at the change in job satisfaction when training participation is changed. In this model, we can eliminate error due to unobserved, time-invariant factor that affect job satisfaction such as upbringing, exposure to job offer, their personality, etc.
+
+\vspace{2mm}
+
+The result of the first difference model in table 11 shows that the change in training participation did not have statistically significant relationship to change in job satisfaction anymore. On average, a change in worker's training participation from not participated to participated in a training translates to a 0.02 points increase in their job satisfaction net of other variables. However this relationship is not significant as the p-value is very high (0.42). The change of significance of a relationship between training and job satisfaction from significant relationship in linear regression to not significant in first difference shows that there is a spurious relationship in the first model. The job satisfaction is more likely to be driven by the type of workers participating in training not the training participation only. 
+
+First Difference Model: 
+$$
+\begin{aligned}
+\Delta Job Satif = \alpha + \beta_{1} \Delta Training + \beta_2\Delta Hour + \beta_3 \Delta Log Income \\
++ \beta_{41} \Delta Contract.1 + \beta_{42}\Delta Contract.2 + \beta_5\Delta Medical Benefit \\
++ \beta_6\Delta Physical + \beta_7\Delta Stress + \beta_8\Delta Age + \beta_9\Delta Gender +\Delta \epsilon
+\end{aligned}
+$$
+
+\vspace{2mm}
+```{r, echo=FALSE, message=FALSE, warning=FALSE, results='asis'}
+model1_imp <- plm(as.numeric(job_satif) ~ training + hour + 
+           log_income + contract + medical_benefit + physical + 
+           stress + age + female + year, index = c("pidlink", "year"),  model = "fd", 
+            data = ifls_filter)
+
+model2_imp <- plm(as.numeric(job_satif) ~ train_duration + hour + 
+           log_income + contract + medical_benefit + physical + 
+           stress + age + female + year, index = c("pidlink", "year"),  model = "fd", 
+            data = ifls_filter)
+
+model1_imp.c <- clusterSE(fit = model1_imp, cluster.var = "pidlink", data=ifls_filter)
+model2_imp.c <- clusterSE(fit = model2_imp, cluster.var = "pidlink", data=ifls_filter)
+
+stargazer(model1_imp.c, model2_imp.c, type = "latex",
+          title = "First-Difference Models Predicting Job Satisfaction",
+  column.labels = c("Improved Model 1", "Improved Model 2"),
+  colnames = FALSE,
+  table.placement = "H",
+  header=FALSE,
+  model.numbers = FALSE,
+  dep.var.labels.include = FALSE,
+  dep.var.caption = "Job Satisfaction (1-4 scale)",
+  keep.stat = c("rsq", "f"),
+  covariate.labels = c("Training = Yes", 
+                       "Training: More than a year ago",
+                       "Training: Less than a year ago for < 1 week",
+                       "Training: Less than a year ago for > 1 week",
+                       "Hour", "Log Income",
+                       "Contract = Fixed-Term", "Contract = Permanent",
+                       "Medical Benefit = Yes",
+                       "Physical Level", "Stress Level",
+                       "Age"),
+  notes = "Standard error is clustered by individual ID",
+  add.lines = list(c("R$^2$", round(summary(model1_imp)$r.squared, 2),
+                     round(summary(model2_imp)$r.squared, 2))),
+  notes.align = "l",
+  column.sep.width = "1pt",
+  font.size= "footnotesize")
+```
+
+This model however has a very strange pattern on age variable. In theory, age should be going up constantly for everyone as everyone was interviewed in the same time seven years later. However, as seen in table 12, while most of respondents' difference in age is seven years, we see that some respondents have -3 to 20 years difference in age between two waves. This might affects the previous first difference models. Therefore, in the next models I will only include observations with constant change in age. 
+\vspace{2mm}
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+ifls_filter2 <- ifls_filter
+ifls_filter2$contract0 <- ifls_filter2$contract=="No Contract"
+ifls_filter2$contract1 <- ifls_filter2$contract=="Fixed-Term Contract"
+ifls_filter2$contract2 <- ifls_filter2$contract=="Permanent Contract"
+ifls_filter2$train_duration1 <- ifls_filter2$train_duration=="More than a year ago"
+ifls_filter2$train_duration2 <- ifls_filter2$train_duration=="Less than a year ago for less than 1 week"
+ifls_filter2$train_duration3 <- ifls_filter2$train_duration=="Less than a year ago for more than 1 week"
+
+ifls_sub <- ddply(ifls_filter2,"pidlink", mutate,
+d.job_satif = firstD(as.numeric(job_satif)),
+d.hour = firstD(hour),
+d.training = firstD(training),
+d.stress = firstD(stress),
+d.female = firstD(female),
+d.age = firstD(age), 
+d.year = firstD(year),
+d.physical = firstD(physical),
+d.medical_benefit = firstD(medical_benefit),
+d.log_income = firstD(log_income),
+d.contract1 = firstD(contract1),
+d.contract2 = firstD(contract2),
+d.train_duration1 = firstD(train_duration1),
+d.train_duration2 = firstD(train_duration2),
+d.train_duration3 = firstD(train_duration3)
+)
+
+age_diff <- as.data.frame(as.array(round(summary(ifls_sub$d.age),2)))
+colnames(age_diff) <- c("Stats.", "Value")
+kbl(age_diff, caption = "Summary statistics of age difference between two waves", 
+    row.names = FALSE, 
+    col.names = NA, 
+    format.args = list(decimal.mark = ".", big.mark = ","),
+    booktabs = T) %>%
+  kable_styling(latex_options = c("striped", "hold_position"))
+```
+
+After filtering the data, the new improved first difference models show similar result as before. A change in training variables does not have a significant effect to change in job satisfaction. This finding confirms that the significant result we observed in linear regression might only be happened because a spurious relationship exist between these two variables. 
+
+\vspace{2mm}
+
+Moreover, this new model in table 13 shows that change in log of income, stress level, and medical benefit significantly translates to a change in job satisfaction. On average, a respondent who had an increase of income by one percent also experienced increase in job satisfaction level by 0.085 points net of other variables. Similar pattern happened when someone's medical benefit status changed from non-receiver to receiver, on average, their job satisfaction increased by 0.108 points after controlling from other variables. While the previous two variables have positive relationship, a change in stress level negatively correlates with job satisfaction even after controlling for other variables. An increase in one point of work stress level, on average, translates to 0.05 decrease in job satisfaction. All of these variables has low p-value of <0.01 indicating the significance of the relationships. 
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, results='asis'}
+constants <- with(ifls_sub, d.age==7)
+
+model3_imp <- lm(d.job_satif ~ d.training + d.hour + 
+             d.log_income + d.contract1 + d.contract2 + 
+             d.medical_benefit + d.physical + 
+             d.stress, data = ifls_sub, subset = constants)
+
+model4_imp <- lm(d.job_satif ~ d.train_duration1 + d.train_duration2 + 
+             d.train_duration3 + d.hour + 
+             d.log_income + d.contract1 + d.contract2 + 
+             d.medical_benefit + d.physical + 
+             d.stress, data = ifls_sub, subset = constants)
+
+stargazer(model3_imp, model4_imp, type = "latex",
+          title = "First-Difference Models Predicting Job Satisfaction",
+  column.labels = c("Improved Model 3", "Improved Model 4"),
+  colnames = FALSE,
+  table.placement = "H",
+  header=FALSE,
+  model.numbers = FALSE,
+  dep.var.labels.include = FALSE,
+  dep.var.caption = "Job Satisfaction (1-4 scale)",
+  keep.stat = c("rsq"),
+  covariate.labels = c("Training = Yes", 
+                       "Training: More than a year ago",
+                       "Training: Less than a year ago for < 1 week",
+                       "Training: Less than a year ago for > 1 week",
+                       "Hour", "Log Income",
+                       "Contract = Fixed-Term", "Contract = Permanent",
+                       "Medical Benefit = Yes",
+                       "Physical Level", "Stress Level",
+                       "Age", "Gender", "Year"),
+  notes = "Data is filtered to include only obs with constant change of age",
+  notes.align = "l",
+  column.sep.width = "1pt",
+  font.size= "footnotesize")
+```
+## Improved Logistic Regression
+\vspace{-2truemm}
+Many studies have found that age correlates negatively with training participation. The decrease in motivation for training of workers from older age group compared to their younger counterparts has been at the center of narratives around why the age of workers is negatively associated with workers’ training participation [@kanfer]. This relationship has been explained as both moderators or is mediated by other variables by many studies. These studies lead me to believe that some level of change in age might increase the effect of training on the odds that someone will stay in the same company. Therefore, I will consider the interaction  effect  of  training and age for the model improvement. For younger people, training might matter more to their job retention decision because they more likely want to explore job opportunity thus their improved skills is translated to higher probability to move to another job. For older people, they are less likely to making decision of staying or moving from a job on training opportunity.
+\vspace{2mm}
+
+Model with Interaction: 
+$$
+\begin{aligned}
+log(\frac{p_{stay}}{1-p_{stay}}) = \alpha + \beta_{1} Training + \beta_2 Hour + \beta_3 Log Income \\ 
++ \beta_{41} Contract.1 + \beta_{42} Contract.2 + \beta_5 Medical Benefit \\
++ \beta_6 Physical + \beta_7 Stress + \beta_8 Age + \beta_9 Gender +  \beta_{10} Age*Training + \epsilon
+\end{aligned}
+$$
+
+The result in table 14 shows that after adding the interaction, the training variables and their respective age's interaction have significant effect in increasing the odds of someone staying at the same job after seven years. The result show a very interesting result. People with training, on average, has higher odd to stay in the same job by 2.88 net of other variables. The interaction, is also statistically significant, indicates that holding other variables constant, for respondent who participated in a training, each additional years of age, on average, decreases someone’s odds to stay in the same job by 4 percent. This increase is significant as the probability to get z-value as large as 3.89 by chance is less than 0.1% under the condition the interaction is not significant. It means that odds to stay decrease as the age increasing for people with training compared to workers without training which align with our previous hypothesis. Similar patterns were observed when dissecting training variables by recency and duration.  
+\vspace{2mm}
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, results='asis'}
+ifls_stay_data$stay_d <- ifelse(ifls_stay_data$stay=="Stay",1,
+                                ifelse(ifls_stay_data$stay=="Move",0,NA))
+
+lm_imp1 <- glm(stay_d ~ training + hour + 
+           log_income + contract + medical_benefit + physical + 
+           stress + age + female + training*age, ifls_stay_data, 
+           family = binomial(link = "logit"))
+
+lm_imp2 <- glm(stay_d ~ train_duration + hour +
+                 log_income + contract + medical_benefit + physical + 
+                 stress + age + female + train_duration*age, ifls_stay_data, 
+               family = binomial(link = "logit"))
+
+models2 <- list(lm_imp1,lm_imp2)
+
+stargazer2(models2, type = "latex",
+          title = "Logistic Regression Models Predicting Employee Retention",
+  column.labels = c("Improved Model 5", "Improved Model 6"),
+  odd.ratio = T,
+  colnames = FALSE,
+  table.placement = "H",
+  header=FALSE,
+  model.numbers = FALSE,
+  dep.var.labels.include = FALSE,
+  dep.var.caption = "Odds Ratio for Stay in the Job",
+  keep.stat = c("rsq", "f"),
+  covariate.labels = c("Training = Yes",
+                       "Training: More than a year ago",
+                       "Training: Less than a year ago for < 1 week",
+                       "Training: Less than a year ago for > 1 week",
+                       "Hour", "Log Income",
+                       "Age", "Gender", "Training * Age",
+                       "Training: More than a year ago * Age",
+                       "Training: Less than a year ago for < 1 week * Age",
+                       "Training: Less than a year ago for > 1 week * Age"),
+  notes.align = "l",
+  omit = c("contractFixed-Term Contract", "contractPermanent Contract",
+           "medical_benefit", "physical", "stress"),
+  notes=c("Controlled variables include contract ownership,",
+                     "medical benefit, physical, and stress level"),
+  add.lines = list(c("Corrected AIC", round(AICc(lm_imp1), 1), round(AICc(lm_imp2), 1))),
+  column.sep.width = "1pt",
+  font.size= "footnotesize")
+```
+Figure 3 below confirms the relationship between age and training to log-odds of staying in the same job. For respondents with no training participation, the older they are, on average, increased their log-odds to stay in the same job, otherwise, age negatively correlates with log-odds to stay in the same job for respondents with training.
+```{r, echo=FALSE, message=FALSE, warning=FALSE, fig.align = "center", fig.cap = "Log-Odds of Staying by Age and Training Participation", fig.height = 4, fig.width = 5}
+library(visreg)
+visreg(lm_imp1, 
+       xvar = "age", by = "training", 
+       overlay=T, partial = F, band = F, legend = F, 
+       line = list(col = wes_palette("Darjeeling1",2)),
+       ylab = "Log-odds to stay at same job") 
+legend("bottomleft", c("No Training", "Training"), 
+       lwd = 2, col = wes_palette("Darjeeling1",2), cex = 0.8) 
+```
+
+# Conclusion
+\vspace{-3truemm}
+This project found that even though training participation does not significantly affect the job satisfaction, there are some evidences that together with age, participating in training might significantly predict workers' decision to stay in the same company. At first, we see that job satisfaction statistics seems to differ by whether the workers undertake training or not, moreover the relationship holds to be significant even after controlling for other variables under linear regression models. However, after controlling for individual heterogeneity, by using first differential models, the significant relationship disappear. This indicates that the linear regression significant coefficient is driven by the differences in workers' non-observable and time-invariant characteristics between those who participated in training and those who did not. Therefore, we fail to conclude there is a relationship between these two variables.
+
+\vspace{2mm}
+
+By using logistic regression, we also looked at whether training participation could predict job retention. The first model showed that training in general does not increase or decrease odds to stay in the same job. However, workers who received more intense training (more than one week) has a significantly higher odds ratio of dropping out the company compared to workers without training. Moreover, in the improved model, we consider the interaction between age and training. This is to recognize that age might affect the relationship between training and job retention. This improved models show that odds to stay in the same job decrease as the age increase for trained workers compared to non-trained workers. Therefore we could conclude that controlling for other variables, training and age have a siginificant relationship with odds to stay in the same job.
+
+\vspace{2mm}
+
+However, all of the conclusions above were made with some things to keep in mind.Firstly, there is an issue of small sample size. The IFLS data only representative to 80 percent of Indonesian population. Moreover, by filtering the data to only include employee, those who answered the question about training, and those with both jobs information in both waves we exclude a lot of respondents and lose the representativeness even more. Therefore, the conclusion might only holds for IFLS respondents only. Secondly, the duration between wave is very long, seven years. Many might happened during those seven years that affect the change of training participation and change in job satisfaction. For example, in 2012 the Ministry of Manpower issue a Minister Decree on skills training funding [@MOM]. This new decree might push some employers to provide training to their employee. Therefore, the first difference model might not catch this time-varying error. Thirdly, the stay variable in the logistic regression capture only workers who works consistently in the same employers for seven years. IFLS data cannot differentiate if the employee come back to previous employers after transfer or more than one year of not-working period. These employees are categorized as "Move" in the retention variable. This failure to identify these workers might undermine our models of training participation and job retention. Finally, larger panel study which sampling design focus more to get the representative employees in Indonesia should be done to get better inference on the effect of training to some job outcomes. 
+\nocite{star} 
+
+
+
